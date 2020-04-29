@@ -9,8 +9,10 @@ using Microsoft.Xrm.Sdk.Query;
 
 namespace CXPPlugins
 {
-    class CalculateTimeInClosePhase : IPlugin
+    public class CheckIfGFRClientNameNeeded : IPlugin
     {
+        //private Entity postOpportunity;
+
         //private IOrganizationService service;
         //private ITracingService tracer;
 
@@ -32,49 +34,220 @@ namespace CXPPlugins
                 (IOrganizationServiceFactory)serviceProvider.GetService(typeof(IOrganizationServiceFactory));
             IOrganizationService ObjService = serviceFactory.CreateOrganizationService(context.UserId);
 
-            if (context.InputParameters.Contains("OpportunityClose") && context.InputParameters["OpportunityClose"] is Entity)
+            // The InputParameters collection contains all the data passed in the message request.
+            if (context.MessageName.ToLower().Equals("delete"))
             {
-                Entity opportunityClose = (Entity)context.InputParameters["OpportunityClose"];
+                Entity preOpportunity = context.PreEntityImages["PreImage"];
 
-                if (opportunityClose.Attributes.Contains("opportunityid") && opportunityClose.Attributes["opportunityid"] != null)
+                if (preOpportunity != null && preOpportunity.Contains("parentaccountid"))
                 {
-                    EntityReference opportunityRef = (EntityReference)opportunityClose.Attributes["opportunityid"];
-                    Entity opportunity = GetOpportunity(opportunityRef.Id, ObjService, ObjTracer);
-                    if (opportunity != null)
-                    {
-                        DateTime dateEnteredClosePhase = opportunity.GetAttributeValue<DateTime>("cxp_dateenteredclosephase");
-                        DateTime actualCloseDate = opportunityClose.GetAttributeValue<DateTime>("actualend");
+                    EntityReference oldAccountRef = preOpportunity.GetAttributeValue<EntityReference>("parentaccountid");
 
-                        TimeSpan timeSpanInClosePhase = actualCloseDate.Subtract(dateEnteredClosePhase);
-                        //decimal timeInClosePhase = Decimal.Parse(timeSpanInClosePhase.TotalDays.ToString());
-                        decimal timeInClosePhase = 0;
-                        Decimal.TryParse(timeSpanInClosePhase.TotalDays.ToString(), out timeInClosePhase);//
-                        Entity modifiedOpportunity = new Entity("opportunity");
-                        modifiedOpportunity.Id = opportunityRef.Id;
-                        modifiedOpportunity.Attributes["cxp_timeinclosephase"] = timeInClosePhase;
-                        //tracer.trace("test");
-                        ObjService.Update(modifiedOpportunity);
+                    if (oldAccountRef != null)
+                    {
+                        // get all opportunityes for the old account
+                        List<Entity> opportunities = GetOpportunitiesForAccount(oldAccountRef, ObjService, ObjTracer);
+                        ProcessOpportunities(opportunities, oldAccountRef, ObjService, ObjTracer);
+                    }
+                }
+            }
+            else
+            {
+                if (context.InputParameters.Contains("Target") &&
+                    context.InputParameters["Target"] is Entity)
+                {
+                    // Obtain the target entity from the input parameters.
+                    Entity entity = (Entity)context.InputParameters["Target"];
+
+                    // Verify that the target entity represents an entity type you are expecting. 
+                    // For example, an account. If not, the plug-in was not registered correctly.
+                    if (entity.LogicalName != "opportunity")
+                    {
+                        ObjTracer.Trace("entity is not an opportunity");
+                        return;
+                    }
+
+                    try
+                    {
+                        Entity preOpportunity = null;
+
+                        if (!context.MessageName.ToLower().Equals("create"))
+                        {
+                            // Get the before image
+                            preOpportunity = context.PreEntityImages["PreImage"];
+                        }
+
+                        // Get the opportunity id from the opportunity entity
+                        Guid opportunityId = entity.Id;
+                        EntityReference newAccountRef = null;
+                        EntityReference oldAccountRef = null;
+
+                        // get the new and old parent account references
+                        if (context.MessageName.ToLower().Equals("create"))
+                        {
+                            if (entity.Contains("parentaccountid"))
+                            {
+                                newAccountRef = entity.GetAttributeValue<EntityReference>("parentaccountid");
+                            }
+                        }
+                        else if (context.MessageName.ToLower().Equals("update"))
+                        {
+
+                            Entity postOpportunity = context.PostEntityImages["PostImage"];
+                            if (entity.Contains("parentaccountid"))
+                            {
+                                newAccountRef = entity.GetAttributeValue<EntityReference>("parentaccountid");
+                            }
+                            else
+                            {
+                                newAccountRef = GetAccountForOpportunity(opportunityId, ObjService, ObjTracer, postOpportunity);
+                            }
+
+                            if (preOpportunity.Contains("parentaccountid"))
+                            {
+                                oldAccountRef = preOpportunity.GetAttributeValue<EntityReference>("parentaccountid");
+                            }
+                        }
+
+                        List<Entity> opportunities = null;
+
+                        if (newAccountRef != null)
+                        {
+                            // get all opportunities for the new account
+                            opportunities = GetOpportunitiesForAccount(newAccountRef, ObjService, ObjTracer);
+                            ProcessOpportunities(opportunities, newAccountRef, ObjService, ObjTracer);
+                        }
+
+                        if (oldAccountRef != null)
+                        {
+                            // get all opportunityes for the old account
+                            opportunities = GetOpportunitiesForAccount(oldAccountRef, ObjService, ObjTracer);
+                            ProcessOpportunities(opportunities, oldAccountRef, ObjService, ObjTracer);
+                        }
+                        //throw new Exception("debugger");
+                    }
+
+                    catch (FaultException<OrganizationServiceFault> ex)
+                    {
+                        ObjTracer.Trace("CheckIfGFRClientNameNeeded: {0}", ex.Message + "\n" + ex.StackTrace);
+                        throw new InvalidPluginExecutionException("An error occurred in CheckIfGFRClientNameNeeded.", ex);
+                    }
+
+                    catch (Exception ex)
+                    {
+                        ObjTracer.Trace("CheckIfGFRClientNameNeeded: {0}", ex.Message + "\n" + ex.StackTrace);
+                        throw new InvalidPluginExecutionException("CheckIfGFRClientNameNeeded: {0}" + ex.Message + "\n" + ex.StackTrace);
                     }
                 }
             }
         }
 
-        protected Entity GetOpportunity(Guid opportunityId, IOrganizationService ObjService, ITracingService ObjTracer)
+        protected EntityReference GetAccountForOpportunity(Guid opportunityId, IOrganizationService ObjService, ITracingService ObjTracer, Entity postOpportunity)
         {
-            Entity opportunity = null;
+            EntityReference accountRef = null;
 
             try
             {
-                opportunity = ObjService.Retrieve("opportunity", opportunityId, new ColumnSet(new string[] { "opportunityid", "cxp_dateenteredclosephase", "actualclosedate" }));
+                //Entity opportunity = ObjService.Retrieve("opportunity", opportunityId, new ColumnSet(new string[] { "parentaccountid"}));
+                Entity opportunity = postOpportunity;
+                if (opportunity != null)
+                {
+                    accountRef = opportunity.GetAttributeValue<EntityReference>("parentaccountid");
+                }
             }
             catch (Exception ex)
             {
-                ObjTracer.Trace("CalculateTimeInClosePhase.GetOpportunity: {0}", ex.ToString());
-                //throw ex;
-                throw new InvalidPluginExecutionException("CalculateTimeInClosePhase.GetOpportunity: {0}" + ex.ToString());
+                ObjTracer.Trace("CheckIfGFRClientNameNeeded: {0}", ex.Message + "\n" + ex.StackTrace);
+                throw;
             }
 
-            return opportunity;
+            return accountRef;
+        }
+
+        protected bool IsGFRRequired(EntityReference serviceAreaRef, IOrganizationService ObjService, ITracingService ObjTracer)
+        {
+            bool bReturnValue = false;
+
+            try
+            {
+                Entity serviceArea = ObjService.Retrieve("rg_servicearea", serviceAreaRef.Id, new ColumnSet(new string[] { "cxp_gfrneeded" }));
+                if (serviceArea != null)
+                {
+                    bReturnValue = serviceArea.GetAttributeValue<bool>("cxp_gfrneeded");
+                }
+            }
+            catch (Exception ex)
+            {
+                ObjTracer.Trace("CheckIfGFRClientNameNeeded: {0}", ex.Message + "\n" + ex.StackTrace);
+                throw new InvalidPluginExecutionException("CheckIfGFRClientNameNeeded: {0}" + ex.Message + "\n" + ex.StackTrace);
+
+            }
+            return bReturnValue;
+        }
+
+        protected List<Entity> GetOpportunitiesForAccount(EntityReference accountRef, IOrganizationService ObjService, ITracingService ObjTracer)
+        {
+            List<Entity> opportunities = new List<Entity>();
+
+            try
+            {
+                QueryByAttribute query = new QueryByAttribute("opportunity");
+                query.ColumnSet = new ColumnSet(new string[] { "cxp_servicerequested", "parentaccountid", "opportunityid" });
+                query.AddAttributeValue("parentaccountid", accountRef.Id);
+
+                EntityCollection results = ObjService.RetrieveMultiple(query);
+
+                if (results != null)
+                {
+                    opportunities = results.Entities.ToList();
+                }
+            }
+            catch (Exception ex)
+            {
+                ObjTracer.Trace("CheckIfGFRClientNameNeeded: {0}", ex.Message + "\n" + ex.StackTrace);
+                throw new InvalidPluginExecutionException("CheckIfGFRClientNameNeeded: {0}" + ex.Message + "\n" + ex.StackTrace);
+
+            }
+
+            return opportunities;
+        }
+
+        protected void UpdateAccount(EntityReference accountRef, bool bGFRRequired, IOrganizationService ObjService, ITracingService ObjTracer)
+        {
+            try
+            {
+                Entity modifiedAccount = new Entity("account");
+                modifiedAccount["accountid"] = accountRef.Id;
+                modifiedAccount["cxp_gfrrequired"] = bGFRRequired;
+
+                ObjService.Update(modifiedAccount);
+            }
+            catch (Exception ex)
+            {
+                ObjTracer.Trace("CheckIfGFRClientNameNeeded: {0}", ex.Message + "\n" + ex.StackTrace);
+                throw new InvalidPluginExecutionException("CheckIfGFRClientNameNeeded: {0}" + ex.Message + "\n" + ex.StackTrace);
+            }
+        }
+
+        protected void ProcessOpportunities(List<Entity> opportunities, EntityReference accountRef, IOrganizationService ObjService, ITracingService ObjTracer)
+        {
+            bool bGFRRequired = false;
+
+            foreach (Entity currOpportunity in opportunities)
+            {
+                EntityReference serviceAreaRef = currOpportunity.GetAttributeValue<EntityReference>("cxp_servicerequested");
+                if (serviceAreaRef != null)
+                {
+                    bGFRRequired = IsGFRRequired(serviceAreaRef, ObjService, ObjTracer);
+                    if (bGFRRequired)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            // set the GFR Required flag on the account
+            UpdateAccount(accountRef, bGFRRequired, ObjService, ObjTracer);
         }
     }
 }
