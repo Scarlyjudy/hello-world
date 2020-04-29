@@ -1,6 +1,3 @@
-# hello-world
-freecode camp start
-learning new technology and software
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -12,7 +9,7 @@ using Microsoft.Xrm.Sdk.Query;
 
 namespace CXPPlugins
 {
-    public class AddUserToAccessTeamForFollow : IPlugin
+    class CalculateTimeInClosePhase : IPlugin
     {
         //private IOrganizationService service;
         //private ITracingService tracer;
@@ -22,7 +19,8 @@ namespace CXPPlugins
             // Extract the tracing service for use in debugging sandboxed plug-ins.
             // If you are not registering the plug-in in the sandbox, then you do
             // not have to add any tracing service related code.
-            ITracingService objTracer = (ITracingService)serviceProvider.GetService(typeof(ITracingService));
+            ITracingService ObjTracer = (ITracingService)serviceProvider.GetService(typeof(ITracingService));
+            ObjTracer.Trace("tracer created in execute method");
 
             // Obtain the execution context from the service provider.
             IPluginExecutionContext context = (IPluginExecutionContext)
@@ -32,197 +30,51 @@ namespace CXPPlugins
             // web service calls.
             IOrganizationServiceFactory serviceFactory =
                 (IOrganizationServiceFactory)serviceProvider.GetService(typeof(IOrganizationServiceFactory));
-            IOrganizationService objService = serviceFactory.CreateOrganizationService(context.UserId);
+            IOrganizationService ObjService = serviceFactory.CreateOrganizationService(context.UserId);
 
-            // The InputParameters collection contains all the data passed in the message request.
-            if (context.MessageName.Equals("Delete"))
+            if (context.InputParameters.Contains("OpportunityClose") && context.InputParameters["OpportunityClose"] is Entity)
             {
-                Entity preFollow = context.PreEntityImages["PreImage"];
+                Entity opportunityClose = (Entity)context.InputParameters["OpportunityClose"];
 
-                if (preFollow != null)
+                if (opportunityClose.Attributes.Contains("opportunityid") && opportunityClose.Attributes["opportunityid"] != null)
                 {
-                    if (preFollow.Contains("ownerid") && preFollow.Contains("regardingobjectid"))
+                    EntityReference opportunityRef = (EntityReference)opportunityClose.Attributes["opportunityid"];
+                    Entity opportunity = GetOpportunity(opportunityRef.Id, ObjService, ObjTracer);
+                    if (opportunity != null)
                     {
-                        Guid userId = preFollow.GetAttributeValue<EntityReference>("ownerid").Id;
-                        EntityReference record = preFollow.GetAttributeValue<EntityReference>("regardingobjectid");
-                        string recordType = record.LogicalName;
-                        Guid recordId = record.Id;
+                        DateTime dateEnteredClosePhase = opportunity.GetAttributeValue<DateTime>("cxp_dateenteredclosephase");
+                        DateTime actualCloseDate = opportunityClose.GetAttributeValue<DateTime>("actualend");
 
-                        //EA in Account Check
-                        if (recordType.ToLower().Equals("account"))
-                        {
-                            bool updated = updateRecordAssociatedEAField(userId, recordId, "account", "accountid", "delete", objService, objTracer);
-                            if (updated) { objTracer.Trace("Associated EAs field updated (removed) successfully for Account."); }
-                        }
-
-                        //EA in Opportunity Check
-                        if (recordType.ToLower().Equals("opportunity"))
-                        {
-                            bool updated = updateRecordAssociatedEAField(userId, recordId, "opportunity", "opportunityid", "delete", objService, objTracer);
-                            if (updated) { objTracer.Trace("Associated EAs field updated (removed) successfully for Opportunity."); }
-                        }
-                    }
-                }
-            } //END DELETE
-
-            else
-            {
-                if (context.InputParameters.Contains("Target") &&
-                    context.InputParameters["Target"] is Entity)
-                {
-                    // Obtain the target entity from the input parameters.
-                    Entity entity = (Entity)context.InputParameters["Target"];
-
-                    // Verify that the target entity represents an entity type you are expecting. 
-                    // For example, an account. If not, the plug-in was not registered correctly.
-                    //if (entity.LogicalName != "postfollow")
-                    //{
-                    //    tracer.Trace("entity is not postfollow");
-                    //    return;
-                    //}
-
-                    if (entity.LogicalName != "cxp_cxpfollow")
-                    {
-                        objTracer.Trace("Entity is not CXP Follow");
-                        return;
-                    }
-
-                    try
-                    {
-                        if (context.MessageName.Equals("Create"))
-                        {
-                            Guid userId = entity.GetAttributeValue<EntityReference>("ownerid").Id;
-                            EntityReference record = entity.GetAttributeValue<EntityReference>("regardingobjectid");
-                            string recordType = record.LogicalName;
-                            Guid recordId = record.Id;
-
-                            if (recordType.ToLower().Equals("account") || recordType.ToLower().Equals("contact"))
-                            {
-                                PluginUtilities pluginUtilities = new PluginUtilities();
-                                //pluginUtilities.Service = objService;
-                                //pluginUtilities.Tracer = objTracer;
-                                //cxpUtilities.CheckIfUserIsAlreadyOnAccessTeam(userId, recordType, recordId);
-                                pluginUtilities.AddUserToRecordAccessTeam(userId, recordType, recordId, objService, objTracer);
-                            }
-
-                            //EA in Account Check
-                            if (recordType.ToLower().Equals("account"))
-                            {
-                                bool updated = updateRecordAssociatedEAField(userId, recordId, "account", "accountid", "insert", objService, objTracer);
-                                if (updated) { objTracer.Trace("Associated EAs field updated (insert) successfully for Account."); }
-                            }
-
-                            //EA in Opportunity Check
-                            if (recordType.ToLower().Equals("opportunity"))
-                            {
-                                bool updated = updateRecordAssociatedEAField(userId, recordId, "opportunity", "opportunityid", "insert", objService, objTracer);
-                                if (updated) { objTracer.Trace("Associated EAs field updated (insert) successfully for Opportunity."); }
-                            }
-                        } //END CREATE
-                    }
-
-                    catch (FaultException<OrganizationServiceFault> ex)
-                    {
-                        throw new InvalidPluginExecutionException("An error occurred in MyPlug-in.", ex);
-                    }
-
-                    catch (Exception ex)
-                    {
-                        objTracer.Trace("MyPlugin: {0}", ex.ToString());
-                        //throw ex;
-                        throw new InvalidPluginExecutionException("MyPlugin: " + ex.ToString());
+                        TimeSpan timeSpanInClosePhase = actualCloseDate.Subtract(dateEnteredClosePhase);
+                        //decimal timeInClosePhase = Decimal.Parse(timeSpanInClosePhase.TotalDays.ToString());
+                        decimal timeInClosePhase = 0;
+                        Decimal.TryParse(timeSpanInClosePhase.TotalDays.ToString(), out timeInClosePhase);//
+                        Entity modifiedOpportunity = new Entity("opportunity");
+                        modifiedOpportunity.Id = opportunityRef.Id;
+                        modifiedOpportunity.Attributes["cxp_timeinclosephase"] = timeInClosePhase;
+                        //tracer.trace("test");
+                        ObjService.Update(modifiedOpportunity);
                     }
                 }
             }
         }
 
-        private bool updateRecordAssociatedEAField(Guid userId, Guid recordId, string recordtype, string idfieldname, string action, IOrganizationService objService, ITracingService objTracer)
+        protected Entity GetOpportunity(Guid opportunityId, IOrganizationService ObjService, ITracingService ObjTracer)
         {
-            bool updated = false;
-            //check if the user has an executive assistant
-            PluginUtilities pluginUtilities = new PluginUtilities();
-            //pluginUtilities.Service = service;
-            //pluginUtilities.Tracer = tracer;
-            EntityReference exec_assistant = pluginUtilities.GetUserEA(userId, objService, objTracer);
-            string updated_eas_str = null;
-            string original_ea_str = null;
-            bool needToUpdate = false;
+            Entity opportunity = null;
 
-            if (exec_assistant != null)
+            try
             {
-                if (action.Equals("insert"))
-                {
-                    Entity tmpEntity = objService.Retrieve(recordtype, recordId, new ColumnSet(new string[] { "cxp_associatedeas" }));
-
-                    if (tmpEntity != null)
-                    {
-                        original_ea_str = tmpEntity.GetAttributeValue<string>("cxp_associatedeas");
-                    }
-
-                    if (original_ea_str == null)
-                    {
-                        updated_eas_str = exec_assistant.Name.ToString();
-                        needToUpdate = true;
-
-                    }
-                    else if (original_ea_str.Contains(exec_assistant.Name.ToString()) == false)
-                    {
-                        updated_eas_str = original_ea_str + "; " + exec_assistant.Name.ToString();
-                        needToUpdate = true;
-                    }
-
-                    if (needToUpdate)
-                    {
-                        Entity modifiedEntity = new Entity(recordtype);
-                        modifiedEntity[idfieldname] = recordId;
-                        modifiedEntity["cxp_associatedeas"] = updated_eas_str;
-                        objService.Update(modifiedEntity);
-
-                        updated = true;
-                    }
-                } //end insert
-
-                else if (action.Equals("delete"))
-                {
-                    Entity tmpEntity = objService.Retrieve(recordtype, recordId, new ColumnSet(new string[] { "cxp_associatedeas" }));
-
-                    if (tmpEntity != null)
-                    {
-                        original_ea_str = tmpEntity.GetAttributeValue<string>("cxp_associatedeas");
-                    }
-
-                    if (original_ea_str != null)
-                    {
-                        if (original_ea_str.Contains("; " + exec_assistant.Name.ToString()))
-                        {
-                            updated_eas_str = original_ea_str.Replace("; " + exec_assistant.Name.ToString(), "");
-                            needToUpdate = true;
-                        }
-
-                        else if (original_ea_str.Contains(exec_assistant.Name.ToString()))
-                        {
-                            updated_eas_str = original_ea_str.Replace(exec_assistant.Name.ToString(), "");
-                            //format string if needed
-                            if (updated_eas_str.Contains("; ;"))
-                            {
-                                updated_eas_str = updated_eas_str.Replace("; ;", ";");
-                            }
-
-                            needToUpdate = true;
-                        }
-                    }
-                    if (needToUpdate)
-                    {
-                        Entity modifiedEntity = new Entity(recordtype);
-                        modifiedEntity[idfieldname] = recordId;
-                        modifiedEntity["cxp_associatedeas"] = updated_eas_str;
-                        objService.Update(modifiedEntity);
-
-                        updated = true;
-                    }
-                } //end delete
+                opportunity = ObjService.Retrieve("opportunity", opportunityId, new ColumnSet(new string[] { "opportunityid", "cxp_dateenteredclosephase", "actualclosedate" }));
             }
-            return updated;
+            catch (Exception ex)
+            {
+                ObjTracer.Trace("CalculateTimeInClosePhase.GetOpportunity: {0}", ex.ToString());
+                //throw ex;
+                throw new InvalidPluginExecutionException("CalculateTimeInClosePhase.GetOpportunity: {0}" + ex.ToString());
+            }
+
+            return opportunity;
         }
     }
 }
