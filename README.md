@@ -9,11 +9,10 @@ using System.Text;
 using System.Threading.Tasks;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Query;
-//checking
 
 namespace CXPPlugins
 {
-    public class AccountCompanyTypeCreateDelete : IPlugin
+    public class AddUserToAccessTeamForFollow : IPlugin
     {
         //private IOrganizationService service;
         //private ITracingService tracer;
@@ -23,7 +22,7 @@ namespace CXPPlugins
             // Extract the tracing service for use in debugging sandboxed plug-ins.
             // If you are not registering the plug-in in the sandbox, then you do
             // not have to add any tracing service related code.
-            ITracingService tracer = (ITracingService)serviceProvider.GetService(typeof(ITracingService));
+            ITracingService objTracer = (ITracingService)serviceProvider.GetService(typeof(ITracingService));
 
             // Obtain the execution context from the service provider.
             IPluginExecutionContext context = (IPluginExecutionContext)
@@ -33,142 +32,197 @@ namespace CXPPlugins
             // web service calls.
             IOrganizationServiceFactory serviceFactory =
                 (IOrganizationServiceFactory)serviceProvider.GetService(typeof(IOrganizationServiceFactory));
-            IOrganizationService service = serviceFactory.CreateOrganizationService(context.UserId);
+            IOrganizationService objService = serviceFactory.CreateOrganizationService(context.UserId);
 
-            EntityReference targetEntity = null;
-            string relationshipName = string.Empty;
-            EntityReferenceCollection relatedEntities = null;
-            Entity companyType = null;
-            Guid companyTypeId = Guid.Empty;
-            Guid accountId = Guid.Empty;
-
-            try
+            // The InputParameters collection contains all the data passed in the message request.
+            if (context.MessageName.Equals("Delete"))
             {
-                if (context.MessageName.ToLower() == "associate" || context.MessageName.ToLower() == "disassociate")
-                {
-                    // Get the relationship key from context
-                    if (context.InputParameters.Contains("Relationship"))
-                    {
-                        // get the relationship name for which the plugin fired
-                        relationshipName = ((Relationship)context.InputParameters["Relationship"]).SchemaName;
-                    }
+                Entity preFollow = context.PreEntityImages["PreImage"];
 
-                    // check if it is the account company type relationship
-                    if (relationshipName != "cxp_cxp_companytype_account")
+                if (preFollow != null)
+                {
+                    if (preFollow.Contains("ownerid") && preFollow.Contains("regardingobjectid"))
                     {
+                        Guid userId = preFollow.GetAttributeValue<EntityReference>("ownerid").Id;
+                        EntityReference record = preFollow.GetAttributeValue<EntityReference>("regardingobjectid");
+                        string recordType = record.LogicalName;
+                        Guid recordId = record.Id;
+
+                        //EA in Account Check
+                        if (recordType.ToLower().Equals("account"))
+                        {
+                            bool updated = updateRecordAssociatedEAField(userId, recordId, "account", "accountid", "delete", objService, objTracer);
+                            if (updated) { objTracer.Trace("Associated EAs field updated (removed) successfully for Account."); }
+                        }
+
+                        //EA in Opportunity Check
+                        if (recordType.ToLower().Equals("opportunity"))
+                        {
+                            bool updated = updateRecordAssociatedEAField(userId, recordId, "opportunity", "opportunityid", "delete", objService, objTracer);
+                            if (updated) { objTracer.Trace("Associated EAs field updated (removed) successfully for Opportunity."); }
+                        }
+                    }
+                }
+            } //END DELETE
+
+            else
+            {
+                if (context.InputParameters.Contains("Target") &&
+                    context.InputParameters["Target"] is Entity)
+                {
+                    // Obtain the target entity from the input parameters.
+                    Entity entity = (Entity)context.InputParameters["Target"];
+
+                    // Verify that the target entity represents an entity type you are expecting. 
+                    // For example, an account. If not, the plug-in was not registered correctly.
+                    //if (entity.LogicalName != "postfollow")
+                    //{
+                    //    tracer.Trace("entity is not postfollow");
+                    //    return;
+                    //}
+
+                    if (entity.LogicalName != "cxp_cxpfollow")
+                    {
+                        objTracer.Trace("Entity is not CXP Follow");
                         return;
                     }
 
-                    if (context.InputParameters.Contains("Target") && context.InputParameters["Target"] is EntityReference)
+                    try
                     {
-                        targetEntity = (EntityReference)context.InputParameters["Target"];
-
-                        if (context.MessageName.ToLower() == "associate")
+                        if (context.MessageName.Equals("Create"))
                         {
-                            if (targetEntity.LogicalName != "cxp_companytype")
-                            {
-                                return;
-                            }
-                            else
-                            {
-                                companyType = service.Retrieve("cxp_companytype", targetEntity.Id, new ColumnSet("cxp_name", "cxp_companytypeid"));
-                            }
-                        }
-                        else if (context.MessageName.ToLower() == "disassociate")
-                        {
-                            if (targetEntity.LogicalName != "account")
-                            {
-                                return;
-                            }
-                            else
-                            {
-                                if (context.InputParameters.Contains("RelatedEntities") && context.InputParameters["RelatedEntities"] is EntityReferenceCollection)
-                                {
-                                    relatedEntities = context.InputParameters["RelatedEntities"] as EntityReferenceCollection;
+                            Guid userId = entity.GetAttributeValue<EntityReference>("ownerid").Id;
+                            EntityReference record = entity.GetAttributeValue<EntityReference>("regardingobjectid");
+                            string recordType = record.LogicalName;
+                            Guid recordId = record.Id;
 
-                                    if (relatedEntities != null && relatedEntities.Count() > 0)
-                                    {
-                                        companyType = service.Retrieve("cxp_companytype", relatedEntities[0].Id, new ColumnSet("cxp_name", "cxp_companytypeid"));
-                                    }
-                                }
-                            }
-                        }
-
-                        Entity modifiedAccount = new Entity("account");
-                        if (context.MessageName.ToLower() == "associate")
-                        {
-                            if (context.InputParameters.Contains("RelatedEntities") &&
-                            context.InputParameters["RelatedEntities"] is EntityReferenceCollection)
+                            if (recordType.ToLower().Equals("account") || recordType.ToLower().Equals("contact"))
                             {
-                                relatedEntities = context.InputParameters["RelatedEntities"] as EntityReferenceCollection;
-
-                                foreach (EntityReference currAccountRef in relatedEntities)
-                                {
-                                    modifiedAccount = new Entity("account");
-                                    modifiedAccount["accountid"] = currAccountRef.Id;
-                                    //if (context.MessageName.ToLower() == "associate")
-                                    //{
-                                    if (companyType.GetAttributeValue<string>("cxp_name").ToLower() == "investor")
-                                    {
-                                        modifiedAccount["cxp_investorcompany"] = true;
-                                    }
-                                    if (companyType.GetAttributeValue<string>("cxp_name").ToLower() == "management company")
-                                    {
-                                        modifiedAccount["cxp_managementcompany"] = true;
-                                    }
-                                    if (companyType.GetAttributeValue<string>("cxp_name").ToLower() == "private equity firm")
-                                    {
-                                        modifiedAccount["cxp_privateequityfirm"] = true;
-                                    }
-                                    //}
-                                    /*else if (context.MessageName.ToLower() == "disassociate")
-                                    {
-                                        if (companyType.GetAttributeValue<string>("cxp_name").ToLower() == "investor")
-                                        {   
-                                            modifiedAccount["cxp_investorcompany"] = false;
-                                        }
-                                        else if (companyType.GetAttributeValue<string>("cxp_name").ToLower() == "management company")
-                                        {
-                                            modifiedAccount["cxp_managementcompany"] = false;
-                                        }
-                                        if (companyType.GetAttributeValue<string>("cxp_name").ToLower() == "private equity firm")
-                                        {
-                                            modifiedAccount["cxp_privateequityfirm"] = false;
-                                        }
-                                    }*/
-                                    service.Update(modifiedAccount);
-                                }
-                            }
-                        }
-                        else if (context.MessageName.ToLower() == "disassociate")
-                        {
-                            modifiedAccount["accountid"] = targetEntity.Id;
-
-                            if (companyType.GetAttributeValue<string>("cxp_name").ToLower() == "investor")
-                            {
-                                modifiedAccount["cxp_investorcompany"] = false;
-                            }
-                            else if (companyType.GetAttributeValue<string>("cxp_name").ToLower() == "management company")
-                            {
-                                modifiedAccount["cxp_managementcompany"] = false;
-                            }
-                            if (companyType.GetAttributeValue<string>("cxp_name").ToLower() == "private equity firm")
-                            {
-                                modifiedAccount["cxp_privateequityfirm"] = false;
+                                PluginUtilities pluginUtilities = new PluginUtilities();
+                                //pluginUtilities.Service = objService;
+                                //pluginUtilities.Tracer = objTracer;
+                                //cxpUtilities.CheckIfUserIsAlreadyOnAccessTeam(userId, recordType, recordId);
+                                pluginUtilities.AddUserToRecordAccessTeam(userId, recordType, recordId, objService, objTracer);
                             }
 
-                            service.Update(modifiedAccount);
-                        }
+                            //EA in Account Check
+                            if (recordType.ToLower().Equals("account"))
+                            {
+                                bool updated = updateRecordAssociatedEAField(userId, recordId, "account", "accountid", "insert", objService, objTracer);
+                                if (updated) { objTracer.Trace("Associated EAs field updated (insert) successfully for Account."); }
+                            }
 
+                            //EA in Opportunity Check
+                            if (recordType.ToLower().Equals("opportunity"))
+                            {
+                                bool updated = updateRecordAssociatedEAField(userId, recordId, "opportunity", "opportunityid", "insert", objService, objTracer);
+                                if (updated) { objTracer.Trace("Associated EAs field updated (insert) successfully for Opportunity."); }
+                            }
+                        } //END CREATE
+                    }
+
+                    catch (FaultException<OrganizationServiceFault> ex)
+                    {
+                        throw new InvalidPluginExecutionException("An error occurred in MyPlug-in.", ex);
+                    }
+
+                    catch (Exception ex)
+                    {
+                        objTracer.Trace("MyPlugin: {0}", ex.ToString());
+                        //throw ex;
+                        throw new InvalidPluginExecutionException("MyPlugin: " + ex.ToString());
                     }
                 }
             }
-            catch (Exception ex)
+        }
+
+        private bool updateRecordAssociatedEAField(Guid userId, Guid recordId, string recordtype, string idfieldname, string action, IOrganizationService objService, ITracingService objTracer)
+        {
+            bool updated = false;
+            //check if the user has an executive assistant
+            PluginUtilities pluginUtilities = new PluginUtilities();
+            //pluginUtilities.Service = service;
+            //pluginUtilities.Tracer = tracer;
+            EntityReference exec_assistant = pluginUtilities.GetUserEA(userId, objService, objTracer);
+            string updated_eas_str = null;
+            string original_ea_str = null;
+            bool needToUpdate = false;
+
+            if (exec_assistant != null)
             {
-                tracer.Trace("AccountCompanyTypeCreateDelete: error - " + ex.Message + "\n" + ex.StackTrace);
-                throw new InvalidPluginExecutionException("AccountCompanyTypeCreateDelete: error - " + ex.Message + "\n" + ex.StackTrace);
+                if (action.Equals("insert"))
+                {
+                    Entity tmpEntity = objService.Retrieve(recordtype, recordId, new ColumnSet(new string[] { "cxp_associatedeas" }));
+
+                    if (tmpEntity != null)
+                    {
+                        original_ea_str = tmpEntity.GetAttributeValue<string>("cxp_associatedeas");
+                    }
+
+                    if (original_ea_str == null)
+                    {
+                        updated_eas_str = exec_assistant.Name.ToString();
+                        needToUpdate = true;
+
+                    }
+                    else if (original_ea_str.Contains(exec_assistant.Name.ToString()) == false)
+                    {
+                        updated_eas_str = original_ea_str + "; " + exec_assistant.Name.ToString();
+                        needToUpdate = true;
+                    }
+
+                    if (needToUpdate)
+                    {
+                        Entity modifiedEntity = new Entity(recordtype);
+                        modifiedEntity[idfieldname] = recordId;
+                        modifiedEntity["cxp_associatedeas"] = updated_eas_str;
+                        objService.Update(modifiedEntity);
+
+                        updated = true;
+                    }
+                } //end insert
+
+                else if (action.Equals("delete"))
+                {
+                    Entity tmpEntity = objService.Retrieve(recordtype, recordId, new ColumnSet(new string[] { "cxp_associatedeas" }));
+
+                    if (tmpEntity != null)
+                    {
+                        original_ea_str = tmpEntity.GetAttributeValue<string>("cxp_associatedeas");
+                    }
+
+                    if (original_ea_str != null)
+                    {
+                        if (original_ea_str.Contains("; " + exec_assistant.Name.ToString()))
+                        {
+                            updated_eas_str = original_ea_str.Replace("; " + exec_assistant.Name.ToString(), "");
+                            needToUpdate = true;
+                        }
+
+                        else if (original_ea_str.Contains(exec_assistant.Name.ToString()))
+                        {
+                            updated_eas_str = original_ea_str.Replace(exec_assistant.Name.ToString(), "");
+                            //format string if needed
+                            if (updated_eas_str.Contains("; ;"))
+                            {
+                                updated_eas_str = updated_eas_str.Replace("; ;", ";");
+                            }
+
+                            needToUpdate = true;
+                        }
+                    }
+                    if (needToUpdate)
+                    {
+                        Entity modifiedEntity = new Entity(recordtype);
+                        modifiedEntity[idfieldname] = recordId;
+                        modifiedEntity["cxp_associatedeas"] = updated_eas_str;
+                        objService.Update(modifiedEntity);
+
+                        updated = true;
+                    }
+                } //end delete
             }
+            return updated;
         }
     }
-
 }
