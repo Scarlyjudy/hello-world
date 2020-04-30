@@ -1,306 +1,225 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.ServiceModel;
 using System.Text;
 using System.Threading.Tasks;
 using Microsoft.Xrm.Sdk;
-using Microsoft.Crm.Sdk.Messages;
-//using Microsoft.Xrm.Sdk.Workflow;
 using Microsoft.Xrm.Sdk.Query;
 
-namespace CXPUtilities
+namespace CXPPlugins
 {
-    public class CXPUtilities
+    public class AddUserToAccessTeamForFollow : IPlugin
     {
-        private IOrganizationService service;
-        private ITracingService tracer;
+        //private IOrganizationService service;
+        //private ITracingService tracer;
 
-        public IOrganizationService Service
+        public void Execute(IServiceProvider serviceProvider)
         {
-            get { return service; }
-            set { service = value; }
-        }
-        
-        public ITracingService Tracer
-        {
-            get { return tracer; }
-            set { tracer = value; }
-        }
+            // Extract the tracing service for use in debugging sandboxed plug-ins.
+            // If you are not registering the plug-in in the sandbox, then you do
+            // not have to add any tracing service related code.
+            ITracingService objTracer = (ITracingService)serviceProvider.GetService(typeof(ITracingService));
 
-        public Entity GetAccount(Guid accountId)
-        {
-            Entity account = null;
+            // Obtain the execution context from the service provider.
+            IPluginExecutionContext context = (IPluginExecutionContext)
+                serviceProvider.GetService(typeof(IPluginExecutionContext));
 
-            try
+            // Obtain the organization service reference which you will need for
+            // web service calls.
+            IOrganizationServiceFactory serviceFactory =
+                (IOrganizationServiceFactory)serviceProvider.GetService(typeof(IOrganizationServiceFactory));
+            IOrganizationService objService = serviceFactory.CreateOrganizationService(context.UserId);
+
+            // The InputParameters collection contains all the data passed in the message request.
+            if (context.MessageName.Equals("Delete"))
             {
-                account = service.Retrieve("account", accountId, new ColumnSet(new string[] { "createdby" }));
-                tracer.Trace("GetAccount: account = " + account != null ? account.ToString() : "null.");
-            }
-            catch(Exception ex)
-            {
-                tracer.Trace(ex.Message + "\n" + ex.StackTrace);
-                throw ex;
-            }
+                Entity preFollow = context.PreEntityImages["PreImage"];
 
-            return account;
-        }
-
-        public Entity GetContact(Guid contactId)
-        {
-            Entity contact = null;
-
-            try
-            {
-                contact = service.Retrieve("contact", contactId, new ColumnSet(new string[] { "createdby" }));
-            }
-            catch (Exception ex)
-            {
-                tracer.Trace(ex.Message + "\n" + ex.StackTrace);
-                throw ex;
-            }
-
-            return contact;
-        }
-
-        public Entity GetUser(Guid userId)
-        {
-            Entity user = null;
-
-            try
-            {
-                user = service.Retrieve("systemuser", userId, new ColumnSet(new string[] { "businessunitid" }));
-            }
-            catch (Exception ex)
-            {
-                tracer.Trace(ex.Message + "\n" + ex.StackTrace);
-                throw ex;
-            }
-
-            return user;
-        }
-
-        public EntityReference GetBUOwnerRef(string buName)
-        {
-            EntityReference buOwnerRef = null;
-
-            try
-            {
-                string systemParameterName = buName + " User";
-                QueryByAttribute query = new QueryByAttribute("cxp_systemparameter");
-                query.AddAttributeValue("cxp_name", systemParameterName);
-                query.ColumnSet = new ColumnSet(new string[] { "cxp_value" });
-
-                EntityCollection results = service.RetrieveMultiple(query);
-
-                if (results != null)
+                if (preFollow != null)
                 {
-                    string buUserName = results.Entities[0].GetAttributeValue<string>("cxp_value");
-                    Entity buUser = GetUserByName(buUserName);
-                    if (buUser != null)
+                    if (preFollow.Contains("ownerid") && preFollow.Contains("regardingobjectid"))
                     {
-                        buOwnerRef = new EntityReference("systemuser", buUser.GetAttributeValue<Guid>("systemuserid"));
-                        buOwnerRef.Name = buUser.GetAttributeValue<string>("fullname");
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                tracer.Trace(ex.Message + "\n" + ex.StackTrace);
-                throw ex;
-            }
+                        Guid userId = preFollow.GetAttributeValue<EntityReference>("ownerid").Id;
+                        EntityReference record = preFollow.GetAttributeValue<EntityReference>("regardingobjectid");
+                        string recordType = record.LogicalName;
+                        Guid recordId = record.Id;
 
-            return buOwnerRef;
-        }
-
-        public Entity GetUserByName(string name)
-        {
-            Entity user = null;
-
-            try
-            {
-                QueryByAttribute query = new QueryByAttribute("systemuser");
-                query.AddAttributeValue("fullname", name);
-                query.ColumnSet = new ColumnSet(new string[] { "systemuserid", "fullname" });
-
-                EntityCollection results = service.RetrieveMultiple(query);
-
-                if (results != null)
-                {
-                    user = results.Entities[0];
-                }
-            }
-            catch (Exception ex)
-            {
-                tracer.Trace(ex.Message + "\n" + ex.StackTrace);
-                throw ex;
-            }
-
-            return user;
-        }
-
-        public void AddUserToRecordAccessTeam(Guid userId, string recordType, Guid recordId)
-        {
-            try
-            {
-                AddUserToRecordTeamRequest request = new AddUserToRecordTeamRequest();
-                request.SystemUserId = userId;
-                request.Record = new EntityReference(recordType, recordId);
-                request.TeamTemplateId = GetAccessTeamTemplateIdByName(recordType);
-
-                service.Execute(request);
-            }
-            catch (Exception ex)
-            {
-                tracer.Trace(ex.Message + "\n" + ex.StackTrace);
-                throw ex;
-            }
-        }
-
-        public Guid GetAccessTeamTemplateIdByName(String recordType)
-        {
-            Guid templateId = Guid.Empty;
-            string accessTeamTemplateName = GetAccessTeamTemplateName(recordType);
-
-            if (accessTeamTemplateName != String.Empty)
-            {
-                try
-                {
-                    QueryExpression teamQuery = new QueryExpression
-                    {
-                        EntityName = "teamtemplate",
-                        ColumnSet = new ColumnSet("teamtemplateid"),
-                        Criteria =
+                        //EA in Account Check
+                        if (recordType.ToLower().Equals("account"))
                         {
-                            Conditions =
-			                {   
-				                new ConditionExpression("teamtemplatename", ConditionOperator.Equal, accessTeamTemplateName)
-			                }
+                            bool updated = updateRecordAssociatedEAField(userId, recordId, "account", "accountid", "delete", objService, objTracer);
+                            if (updated) { objTracer.Trace("Associated EAs field updated (removed) successfully for Account."); }
                         }
-                    };
 
-                    var results = service.RetrieveMultiple(teamQuery).Entities;
-
-                    if (results.Count != 1)
-                        throw new Exception("Can't retrieve Team Access Template for " + recordType);
-                    else
-                    {
-                        templateId = results[0].Id;
+                        //EA in Opportunity Check
+                        if (recordType.ToLower().Equals("opportunity"))
+                        {
+                            bool updated = updateRecordAssociatedEAField(userId, recordId, "opportunity", "opportunityid", "delete", objService, objTracer);
+                            if (updated) { objTracer.Trace("Associated EAs field updated (removed) successfully for Opportunity."); }
+                        }
                     }
                 }
-                catch (Exception ex)
+            } //END DELETE
+
+            else
+            {
+                if (context.InputParameters.Contains("Target") &&
+                    context.InputParameters["Target"] is Entity)
                 {
-                    tracer.Trace(ex.Message + "\n" + ex.StackTrace);
-                    throw ex;
-                }
-            }
-            
-            return templateId;
-        }
+                    // Obtain the target entity from the input parameters.
+                    Entity entity = (Entity)context.InputParameters["Target"];
 
-        public string GetAccessTeamTemplateName(string recordType)
-        {
-            string teamName = String.Empty;
-            string systemParameterName = String.Empty;
+                    // Verify that the target entity represents an entity type you are expecting. 
+                    // For example, an account. If not, the plug-in was not registered correctly.
+                    //if (entity.LogicalName != "postfollow")
+                    //{
+                    //    tracer.Trace("entity is not postfollow");
+                    //    return;
+                    //}
 
-            if (recordType.ToLower().Equals("account"))
-            {
-                systemParameterName = "Account Access Team Template";
-            }
-            else if (recordType.ToLower().Equals("contact"))
-            {
-                systemParameterName = "Contact Access Team Template";
-            }
-
-            if (systemParameterName != String.Empty)
-            {
-                try
-                {
-                    QueryByAttribute query = new QueryByAttribute("cxp_systemparameter");
-                    query.AddAttributeValue("cxp_name", systemParameterName);
-                    query.ColumnSet = new ColumnSet(new string[] { "cxp_value" });
-
-                    EntityCollection results = service.RetrieveMultiple(query);
-
-                    if (results != null)
+                    if (entity.LogicalName != "cxp_cxpfollow")
                     {
-                        teamName = results.Entities[0].GetAttributeValue<string>("cxp_value");
+                        objTracer.Trace("Entity is not CXP Follow");
+                        return;
+                    }
+
+                    try
+                    {
+                        if (context.MessageName.Equals("Create"))
+                        {
+                            Guid userId = entity.GetAttributeValue<EntityReference>("ownerid").Id;
+                            EntityReference record = entity.GetAttributeValue<EntityReference>("regardingobjectid");
+                            string recordType = record.LogicalName;
+                            Guid recordId = record.Id;
+
+                            if (recordType.ToLower().Equals("account") || recordType.ToLower().Equals("contact"))
+                            {
+                                PluginUtilities pluginUtilities = new PluginUtilities();
+                                //pluginUtilities.Service = objService;
+                                //pluginUtilities.Tracer = objTracer;
+                                //cxpUtilities.CheckIfUserIsAlreadyOnAccessTeam(userId, recordType, recordId);
+                                pluginUtilities.AddUserToRecordAccessTeam(userId, recordType, recordId, objService, objTracer);
+                            }
+
+                            //EA in Account Check
+                            if (recordType.ToLower().Equals("account"))
+                            {
+                                bool updated = updateRecordAssociatedEAField(userId, recordId, "account", "accountid", "insert", objService, objTracer);
+                                if (updated) { objTracer.Trace("Associated EAs field updated (insert) successfully for Account."); }
+                            }
+
+                            //EA in Opportunity Check
+                            if (recordType.ToLower().Equals("opportunity"))
+                            {
+                                bool updated = updateRecordAssociatedEAField(userId, recordId, "opportunity", "opportunityid", "insert", objService, objTracer);
+                                if (updated) { objTracer.Trace("Associated EAs field updated (insert) successfully for Opportunity."); }
+                            }
+                        } //END CREATE
+                    }
+
+                    catch (FaultException<OrganizationServiceFault> ex)
+                    {
+                        throw new InvalidPluginExecutionException("An error occurred in MyPlug-in.", ex);
+                    }
+
+                    catch (Exception ex)
+                    {
+                        objTracer.Trace("MyPlugin: {0}", ex.ToString());
+                        //throw ex;
+                        throw new InvalidPluginExecutionException("MyPlugin: " + ex.ToString());
                     }
                 }
-                catch (Exception ex)
+            }
+        }
+
+        private bool updateRecordAssociatedEAField(Guid userId, Guid recordId, string recordtype, string idfieldname, string action, IOrganizationService objService, ITracingService objTracer)
+        {
+            bool updated = false;
+            //check if the user has an executive assistant
+            PluginUtilities pluginUtilities = new PluginUtilities();
+            //pluginUtilities.Service = service;
+            //pluginUtilities.Tracer = tracer;
+            EntityReference exec_assistant = pluginUtilities.GetUserEA(userId, objService, objTracer);
+            string updated_eas_str = null;
+            string original_ea_str = null;
+            bool needToUpdate = false;
+
+            if (exec_assistant != null)
+            {
+                if (action.Equals("insert"))
                 {
-                    tracer.Trace(ex.Message + "\n" + ex.StackTrace);
-                    throw ex;
-                }
-            }
-            
-            return teamName;
-        }
+                    Entity tmpEntity = objService.Retrieve(recordtype, recordId, new ColumnSet(new string[] { "cxp_associatedeas" }));
 
-        public void CreateFollowOfRecordForCreatedByUser(Guid userId, string recordType, Guid recordId)
-        {
-            try
-            {
-                Entity postFollow = new Entity("postfollow");
-                postFollow.Attributes["regardingobjectid"] = new EntityReference(recordType, recordId);
-                postFollow.Attributes["ownerid"] = new EntityReference("systemuser", userId);
-                service.Create(postFollow);
-            }
-            catch (Exception ex)
-            {
-                tracer.Trace(ex.Message + "\n" + ex.StackTrace);
-                throw ex;
-            }
-        }
+                    if (tmpEntity != null)
+                    {
+                        original_ea_str = tmpEntity.GetAttributeValue<string>("cxp_associatedeas");
+                    }
 
-        public Entity GetAccountCommunicationOptions(Guid accountId)
-        {
-            Entity account = null;
+                    if (original_ea_str == null)
+                    {
+                        updated_eas_str = exec_assistant.Name.ToString();
+                        needToUpdate = true;
 
-            try
-            {
-                account = service.Retrieve("account", accountId, new ColumnSet(new string[] { "donotbulkemail","donotbulkpostalmail","donotemail","donotphone","donotfax","donotpostalmail","donotsendmm"}));
-                tracer.Trace("GetAccount: account = " + account != null ? account.ToString() : "null.");
-            }
-            catch (Exception ex)
-            {
-                tracer.Trace(ex.Message + "\n" + ex.StackTrace);
-                throw ex;
-            }
+                    }
+                    else if (original_ea_str.Contains(exec_assistant.Name.ToString()) == false)
+                    {
+                        updated_eas_str = original_ea_str + "; " + exec_assistant.Name.ToString();
+                        needToUpdate = true;
+                    }
 
-            return account;
-        }
+                    if (needToUpdate)
+                    {
+                        Entity modifiedEntity = new Entity(recordtype);
+                        modifiedEntity[idfieldname] = recordId;
+                        modifiedEntity["cxp_associatedeas"] = updated_eas_str;
+                        objService.Update(modifiedEntity);
 
-        public List<Entity> GetContactsForAccount(Guid accountId)
-        {
-            List<Entity> contacts = new List<Entity>();
+                        updated = true;
+                    }
+                } //end insert
 
-            try
-            {
-                QueryByAttribute query = new QueryByAttribute("contact");
-                query.AddAttributeValue("parentcustomerid", accountId);
-                query.ColumnSet = new ColumnSet(new string[] { "contactid" });
-
-                EntityCollection results = service.RetrieveMultiple(query);
-
-                if (results != null)
+                else if (action.Equals("delete"))
                 {
-                    contacts = results.Entities.ToList();
-                }
+                    Entity tmpEntity = objService.Retrieve(recordtype, recordId, new ColumnSet(new string[] { "cxp_associatedeas" }));
+
+                    if (tmpEntity != null)
+                    {
+                        original_ea_str = tmpEntity.GetAttributeValue<string>("cxp_associatedeas");
+                    }
+
+                    if (original_ea_str != null)
+                    {
+                        if (original_ea_str.Contains("; " + exec_assistant.Name.ToString()))
+                        {
+                            updated_eas_str = original_ea_str.Replace("; " + exec_assistant.Name.ToString(), "");
+                            needToUpdate = true;
+                        }
+
+                        else if (original_ea_str.Contains(exec_assistant.Name.ToString()))
+                        {
+                            updated_eas_str = original_ea_str.Replace(exec_assistant.Name.ToString(), "");
+                            //format string if needed
+                            if (updated_eas_str.Contains("; ;"))
+                            {
+                                updated_eas_str = updated_eas_str.Replace("; ;", ";");
+                            }
+
+                            needToUpdate = true;
+                        }
+                    }
+                    if (needToUpdate)
+                    {
+                        Entity modifiedEntity = new Entity(recordtype);
+                        modifiedEntity[idfieldname] = recordId;
+                        modifiedEntity["cxp_associatedeas"] = updated_eas_str;
+                        objService.Update(modifiedEntity);
+
+                        updated = true;
+                    }
+                } //end delete
             }
-            catch (Exception ex)
-            {
-                tracer.Trace(ex.Message + "\n" + ex.StackTrace);
-                throw ex;
-            }
-
-            return contacts;
-        }
-
-        public bool boolCheckIfUserIsAlreadyOnAccessTeam(Guid userId, string recordType, Guid recordId)
-        {
-            bool returnValue = false;
-
-            return returnValue;
+            return updated;
         }
     }
 }
