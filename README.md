@@ -1,25 +1,24 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.ServiceModel;
-using System.Text;
-using System.Threading.Tasks;
 using Microsoft.Xrm.Sdk;
-using Microsoft.Xrm.Sdk.Query;
 
+//The plugin is called on create of new Opportunnity and update of business development fields in opportunity entity
 namespace CXPPlugins
 {
-    public class AddUserToAccessTeamForFollow : IPlugin
+    public class CreateOppExtension : IPlugin
     {
         //private IOrganizationService service;
         //private ITracingService tracer;
+        public bool changeflag = false;
 
+        //TODO: Take a look at the images that you have on plugins. Only the attributes that you are using need to be passed in.
+        //TODO: I suggest that you update values that you use the post entity to update values on CR extension that aren't actually the same. This will allow you to recover from an error on an earlier update.
         public void Execute(IServiceProvider serviceProvider)
         {
             // Extract the tracing service for use in debugging sandboxed plug-ins.
             // If you are not registering the plug-in in the sandbox, then you do
             // not have to add any tracing service related code.
-            ITracingService objTracer = (ITracingService)serviceProvider.GetService(typeof(ITracingService));
+            //tracer = (ITracingService)serviceProvider.GetService(typeof(ITracingService));
+            //tracer.Trace("tracer created in execute method");
 
             // Obtain the execution context from the service provider.
             IPluginExecutionContext context = (IPluginExecutionContext)
@@ -31,195 +30,166 @@ namespace CXPPlugins
                 (IOrganizationServiceFactory)serviceProvider.GetService(typeof(IOrganizationServiceFactory));
             IOrganizationService objService = serviceFactory.CreateOrganizationService(context.UserId);
 
-            // The InputParameters collection contains all the data passed in the message request.
-            if (context.MessageName.Equals("Delete"))
+            ITracingService tracer = (ITracingService)serviceProvider.GetService(typeof(ITracingService));
+
+            #region Early Return Checks
+            if (context.Depth > 3)
             {
-                Entity preFollow = context.PreEntityImages["PreImage"];
+                return;
+            }
+            //If we dont' have an target or target isn't entity or was triggered from delete return
+            if (!context.InputParameters.Contains("Target")
+                || !(context.InputParameters["Target"] is Entity)
+                || context.MessageName.Equals("delete", StringComparison.OrdinalIgnoreCase))
+            {
+                tracer.Trace("Trigger was not correct, or the target wasn't an entity.");
+                return;
+            }
+            Entity objOpportunity = (Entity)context.InputParameters["Target"];
+            //If the target is null or it's not an opportunity return
+            if (objOpportunity == null ||
+                !objOpportunity.LogicalName.Equals("opportunity", StringComparison.OrdinalIgnoreCase))
+            {
+                tracer.Trace("The correct entity was not passed into the plugin");
+                return;
+            }
+            //If we don't have a parent or the parent we have is null then return
+            ////Using post-image because that is the only way we guarantee that it is passed if there is one.
+            //if (!context.PostEntityImages["PostImage"].Contains("cxp_parentopportunity")
+            //    || context.PostEntityImages["PostImage"]["cxp_parentopportunity"] == null)
+            //{
+            //    tracer.Trace("The opportunity has no parent, so we do not need execute the logic for this plugin.");
+            //    return;
+            //}
+            #endregion
 
-                if (preFollow != null)
+            //TODO: Could no longer follow link.
+            //https://docs.microsoft.com/en-us/previous-versions/dynamicscrm-2016/developers-guide/gg326129(v%3Dcrm.8)
+            Guid guOppID = context.PrimaryEntityId; //TODO: Do you need this?
+
+            //TODO: Read below comment
+            //Check here if post image has a reference to this entity if it does then set the GUID here otherwise set just the name.
+            //This will allow you to write your code so that if something happens and it doesn't create one on create of the entity,
+            //than you will be able to create one even on updates
+            //Also right now you are creating if for some reason you have a null value for objOpportunity
+            Entity objOppExtension = new Entity("cxp_oppextensionforcresalesvalidation");
+            if (objOpportunity != null)
+            {
+                //TODO: Seeing if a entity contains attribute: objOpportunity.Contains("name") seeing if attribute is null: objOpportunity["name"] == null
+                if (objOpportunity.Attributes.ContainsKey("name") && objOpportunity.Attributes["name"] != null)
                 {
-                    if (preFollow.Contains("ownerid") && preFollow.Contains("regardingobjectid"))
-                    {
-                        Guid userId = preFollow.GetAttributeValue<EntityReference>("ownerid").Id;
-                        EntityReference record = preFollow.GetAttributeValue<EntityReference>("regardingobjectid");
-                        string recordType = record.LogicalName;
-                        Guid recordId = record.Id;
-
-                        //EA in Account Check
-                        if (recordType.ToLower().Equals("account"))
-                        {
-                            bool updated = updateRecordAssociatedEAField(userId, recordId, "account", "accountid", "delete", objService, objTracer);
-                            if (updated) { objTracer.Trace("Associated EAs field updated (removed) successfully for Account."); }
-                        }
-
-                        //EA in Opportunity Check
-                        if (recordType.ToLower().Equals("opportunity"))
-                        {
-                            bool updated = updateRecordAssociatedEAField(userId, recordId, "opportunity", "opportunityid", "delete", objService, objTracer);
-                            if (updated) { objTracer.Trace("Associated EAs field updated (removed) successfully for Opportunity."); }
-                        }
-                    }
+                    //TODO: objOpportunity.GetAttributeValue<string>("name"); Can be used everywhere in this... optionsetValue, Money, decimal, string, EntityReference, string
+                    //https://community.dynamics.com/crm/b/crmentropy/archive/2013/08/28/entity-getattributevalue-lt-t-gt-explained
+                    objOppExtension["cxp_name"] = objOpportunity["name"].ToString();
                 }
-            } //END DELETE
 
-            else
-            {
-                if (context.InputParameters.Contains("Target") &&
-                    context.InputParameters["Target"] is Entity)
+                if (objOpportunity.Attributes.ContainsKey("rg_gsmc") && objOpportunity.Attributes["rg_gsmc"] != null)
                 {
-                    // Obtain the target entity from the input parameters.
-                    Entity entity = (Entity)context.InputParameters["Target"];
+                    //TODO: GetAttributeValue
+                    objOppExtension["cxp_businessdevelopment"] = Convert.ToBoolean(objOpportunity["rg_gsmc"].ToString());
+                }
+                //
+                if (objOpportunity.Attributes.ContainsKey("cpdc_targetstatus") && objOpportunity.Attributes["cpdc_targetstatus"] != null)
+                {
+                    //TODO: GetAttributeValue
+                    objOppExtension["cxp_targetstatus"] = new OptionSetValue(Convert.ToInt32(((OptionSetValue)objOpportunity["cpdc_targetstatus"]).Value));
+                }
+                //
+                if (objOpportunity.Attributes.ContainsKey("cpdc_assignedcre") && objOpportunity.Attributes["cpdc_assignedcre"] != null)
+                {
 
-                    // Verify that the target entity represents an entity type you are expecting. 
-                    // For example, an account. If not, the plug-in was not registered correctly.
-                    //if (entity.LogicalName != "postfollow")
-                    //{
-                    //    tracer.Trace("entity is not postfollow");
-                    //    return;
-                    //}
+                    //TODO: Is this already an entity reference to system user? if so objOpportunity.GetAttributeValue<EntityReference>("cpdc_assignedcre");
+                    EntityReference objAssignedCRE = ((EntityReference)objOpportunity["cpdc_assignedcre"]);
+                    objOppExtension["cxp_assignedcre"] = new EntityReference("systemuser", objAssignedCRE.Id);
+                }
+                //
+                if (objOpportunity.Attributes.ContainsKey("cpdc_riskweightedvalue") && objOpportunity.Attributes["cpdc_riskweightedvalue"] != null)
+                {
+                    //TODO: GetAttributeValue
+                    objOppExtension["cxp_riskweightedvalue"] = new Money(Convert.ToDecimal(objOpportunity["cpdc_riskweightedvalue"].ToString()));
+                }
+                //
+                if (objOpportunity.Attributes.ContainsKey("cxp_neworexistingclient") && objOpportunity.Attributes["cxp_neworexistingclient"] != null)
+                {
+                    //TODO: GetAttributeValue
+                    objOppExtension["cxp_neworexistingclient"] = new OptionSetValue(Convert.ToInt32(((OptionSetValue)objOpportunity["cxp_neworexistingclient"]).Value));
+                }
+                //
+                if (objOpportunity.Attributes.ContainsKey("cxp_typeofwork") && objOpportunity.Attributes["cxp_typeofwork"] != null)
+                {
+                    //TODO: GetAttributeValue
+                    objOppExtension["cxp_typeofwork"] = new OptionSetValue(Convert.ToInt32(((OptionSetValue)objOpportunity["cxp_typeofwork"]).Value));
+                }
+                //
+                if (objOpportunity.Attributes.ContainsKey("cxp_validationsought") && objOpportunity.Attributes["cxp_validationsought"] != null)
+                {
+                    //TODO: GetAttributeValue
+                    objOppExtension["cxp_validationsought"] = new OptionSetValue(Convert.ToInt32(((OptionSetValue)objOpportunity["cxp_validationsought"]).Value));
+                }
+                //
+                if (objOpportunity.Attributes.ContainsKey("cxp_describehowthisopportunitywasidentified") && objOpportunity.Attributes["cxp_describehowthisopportunitywasidentified"] != null)
+                {
+                    //TODO: GetAttributeValue
+                    objOppExtension["cxp_describehowthisopportunitywasidentified"] = objOpportunity["cxp_describehowthisopportunitywasidentified"].ToString();
+                }
+                //
+                if (objOpportunity.Attributes.ContainsKey("cxp_whatworkdidyouprovidefromidentificationto") && objOpportunity.Attributes["cxp_whatworkdidyouprovidefromidentificationto"] != null)
+                {
+                    //TODO: GetAttributeValue
+                    objOppExtension["cxp_whatworkdidyouprovidefromidentificationto"] = objOpportunity["cxp_whatworkdidyouprovidefromidentificationto"].ToString();
+                }
+                //
+                if (objOpportunity.Attributes.ContainsKey("cxp_describeyourrelationshiptotheclientthatha") && objOpportunity.Attributes["cxp_describeyourrelationshiptotheclientthatha"] != null)
+                {
+                    //TODO: GetAttributeValue
+                    objOppExtension["cxp_describeyourrelationshiptotheclientthatha"] = objOpportunity["cxp_describeyourrelationshiptotheclientthatha"].ToString();
+                }
 
-                    if (entity.LogicalName != "cxp_cxpfollow")
-                    {
-                        objTracer.Trace("Entity is not CXP Follow");
-                        return;
-                    }
+                // Set LookUp value for Opp On CRE Extension                                     
+
+                    objOppExtension["cxp_opportunity"] = new EntityReference("opportunity", guOppID);
+                
+
+
+            }
+            //Retrieve the record's Guid based upon passed in parameters.
+            if (context.MessageName.ToLower() == "create")
+            {
+                Guid guOppExtensionID = objService.Create(objOppExtension);
+
+                if (guOppExtensionID != Guid.Empty)
+                {
+                    Entity objModifiedOpp = new Entity("opportunity");
+                    objModifiedOpp.Id = objOpportunity.Id;
+                    objModifiedOpp["cxp_opportunityextension"] = new EntityReference("cxp_oppextensionforcresalesvalidation", guOppExtensionID);
+                    objService.Update(objModifiedOpp);
+
+
+
+                }
+
+
+
+            }
+            //Registered the Post image to retrieve the opp extention data if that is not updated in the particular entity.
+            else if (context.MessageName.ToLower() == "update")
+            {
+                Entity postOpportunity = context.PostEntityImages["PostImage"];
+                if (postOpportunity != null && postOpportunity.Attributes.ContainsKey("cxp_opportunityextension"))
+                {
+                    EntityReference objOppExt = (EntityReference)postOpportunity.Attributes["cxp_opportunityextension"];
+                    objOppExtension.Id = objOppExt.Id;
 
                     try
                     {
-                        if (context.MessageName.Equals("Create"))
-                        {
-                            Guid userId = entity.GetAttributeValue<EntityReference>("ownerid").Id;
-                            EntityReference record = entity.GetAttributeValue<EntityReference>("regardingobjectid");
-                            string recordType = record.LogicalName;
-                            Guid recordId = record.Id;
-
-                            if (recordType.ToLower().Equals("account") || recordType.ToLower().Equals("contact"))
-                            {
-                                PluginUtilities pluginUtilities = new PluginUtilities();
-                                //pluginUtilities.Service = objService;
-                                //pluginUtilities.Tracer = objTracer;
-                                //cxpUtilities.CheckIfUserIsAlreadyOnAccessTeam(userId, recordType, recordId);
-                                pluginUtilities.AddUserToRecordAccessTeam(userId, recordType, recordId, objService, objTracer);
-                            }
-
-                            //EA in Account Check
-                            if (recordType.ToLower().Equals("account"))
-                            {
-                                bool updated = updateRecordAssociatedEAField(userId, recordId, "account", "accountid", "insert", objService, objTracer);
-                                if (updated) { objTracer.Trace("Associated EAs field updated (insert) successfully for Account."); }
-                            }
-
-                            //EA in Opportunity Check
-                            if (recordType.ToLower().Equals("opportunity"))
-                            {
-                                bool updated = updateRecordAssociatedEAField(userId, recordId, "opportunity", "opportunityid", "insert", objService, objTracer);
-                                if (updated) { objTracer.Trace("Associated EAs field updated (insert) successfully for Opportunity."); }
-                            }
-                        } //END CREATE
+                        objService.Update(objOppExtension);
                     }
-
-                    catch (FaultException<OrganizationServiceFault> ex)
-                    {
-                        throw new InvalidPluginExecutionException("An error occurred in MyPlug-in.", ex);
-                    }
-
                     catch (Exception ex)
                     {
-                        objTracer.Trace("MyPlugin: {0}", ex.ToString());
-                        //throw ex;
-                        throw new InvalidPluginExecutionException("MyPlugin: " + ex.ToString());
+                        throw new InvalidPluginExecutionException(" exception " + ex.Message + ex.StackTrace);
                     }
                 }
             }
-        }
-
-        private bool updateRecordAssociatedEAField(Guid userId, Guid recordId, string recordtype, string idfieldname, string action, IOrganizationService objService, ITracingService objTracer)
-        {
-            bool updated = false;
-            //check if the user has an executive assistant
-            PluginUtilities pluginUtilities = new PluginUtilities();
-            //pluginUtilities.Service = service;
-            //pluginUtilities.Tracer = tracer;
-            EntityReference exec_assistant = pluginUtilities.GetUserEA(userId, objService, objTracer);
-            string updated_eas_str = null;
-            string original_ea_str = null;
-            bool needToUpdate = false;
-
-            if (exec_assistant != null)
-            {
-                if (action.Equals("insert"))
-                {
-                    Entity tmpEntity = objService.Retrieve(recordtype, recordId, new ColumnSet(new string[] { "cxp_associatedeas" }));
-
-                    if (tmpEntity != null)
-                    {
-                        original_ea_str = tmpEntity.GetAttributeValue<string>("cxp_associatedeas");
-                    }
-
-                    if (original_ea_str == null)
-                    {
-                        updated_eas_str = exec_assistant.Name.ToString();
-                        needToUpdate = true;
-
-                    }
-                    else if (original_ea_str.Contains(exec_assistant.Name.ToString()) == false)
-                    {
-                        updated_eas_str = original_ea_str + "; " + exec_assistant.Name.ToString();
-                        needToUpdate = true;
-                    }
-
-                    if (needToUpdate)
-                    {
-                        Entity modifiedEntity = new Entity(recordtype);
-                        modifiedEntity[idfieldname] = recordId;
-                        modifiedEntity["cxp_associatedeas"] = updated_eas_str;
-                        objService.Update(modifiedEntity);
-
-                        updated = true;
-                    }
-                } //end insert
-
-                else if (action.Equals("delete"))
-                {
-                    Entity tmpEntity = objService.Retrieve(recordtype, recordId, new ColumnSet(new string[] { "cxp_associatedeas" }));
-
-                    if (tmpEntity != null)
-                    {
-                        original_ea_str = tmpEntity.GetAttributeValue<string>("cxp_associatedeas");
-                    }
-
-                    if (original_ea_str != null)
-                    {
-                        if (original_ea_str.Contains("; " + exec_assistant.Name.ToString()))
-                        {
-                            updated_eas_str = original_ea_str.Replace("; " + exec_assistant.Name.ToString(), "");
-                            needToUpdate = true;
-                        }
-
-                        else if (original_ea_str.Contains(exec_assistant.Name.ToString()))
-                        {
-                            updated_eas_str = original_ea_str.Replace(exec_assistant.Name.ToString(), "");
-                            //format string if needed
-                            if (updated_eas_str.Contains("; ;"))
-                            {
-                                updated_eas_str = updated_eas_str.Replace("; ;", ";");
-                            }
-
-                            needToUpdate = true;
-                        }
-                    }
-                    if (needToUpdate)
-                    {
-                        Entity modifiedEntity = new Entity(recordtype);
-                        modifiedEntity[idfieldname] = recordId;
-                        modifiedEntity["cxp_associatedeas"] = updated_eas_str;
-                        objService.Update(modifiedEntity);
-
-                        updated = true;
-                    }
-                } //end delete
-            }
-            return updated;
         }
     }
 }
