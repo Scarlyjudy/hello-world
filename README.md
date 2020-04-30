@@ -1,252 +1,306 @@
 using System;
-using System.Activities;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using Microsoft.Xrm.Sdk;
-using Microsoft.Xrm.Sdk.Workflow;
+using Microsoft.Crm.Sdk.Messages;
+//using Microsoft.Xrm.Sdk.Workflow;
 using Microsoft.Xrm.Sdk.Query;
 
-namespace CXPWorkflows
+namespace CXPUtilities
 {
-    public class GenerateNewMatterNumber : CodeActivity
+    public class CXPUtilities
     {
-        //private IOrganizationService service;
-        //private ITracingService tracer;
+        private IOrganizationService service;
+        private ITracingService tracer;
 
-        [RequiredArgument]
-        [Input("Client")]
-        [ReferenceTarget("account")]
-        public InArgument<EntityReference> Client { get; set; }
+        public IOrganizationService Service
+        {
+            get { return service; }
+            set { service = value; }
+        }
         
-
-                                   [RequiredArgument]
-                                    [Input("OpportunityProduct")]
-                                    [ReferenceTarget("product")]
-                                    public InArgument<EntityReference> OpportunityProduct { get; set; }
-
-        [RequiredArgument]
-        [Input("MatterYear")]
-        public InArgument<string> MatterYear { get; set; }
-
-        [Output("MatterNumber")]
-        public OutArgument<string> MatterNumber { get; set; }
-
-        protected override void Execute(CodeActivityContext executionContext)
+        public ITracingService Tracer
         {
-            // Get the context service.
-            IWorkflowContext context = executionContext.GetExtension<IWorkflowContext>();
-            IOrganizationServiceFactory serviceFactory = executionContext.GetExtension<IOrganizationServiceFactory>();
-
-            // Use the context service to create an instance of IOrganizationService.
-            IOrganizationService objService = serviceFactory.CreateOrganizationService(context.InitiatingUserId);
-            //service = serviceFactory.CreateOrganizationService(context.InitiatingUserId);
-
-            ITracingService objTracer = executionContext.GetExtension<ITracingService>();
-            //tracer = executionContext.GetExtension<ITracingService>();
-
-            EntityReference accountRef = this.Client.Get(executionContext);
-            EntityReference serviceRef = this.OpportunityProduct.Get(executionContext);
-            string matterYear = this.MatterYear.Get(executionContext);
-         
-            if (serviceRef == null)
-            {
-                throw new Exception("Opportunity Product needs to be updated before generating the Matter number.");
-            }
-            if (matterYear == null)
-            {
-                throw new Exception("Matter Year needs to be updated before generating the Matter number.");
-            }
-
-                // get service area reference, appropriate year and client number
-                Entity account = null;
-            string accountNumber = String.Empty;
-
-            if (accountRef != null)
-            {
-                account = GetAccount(accountRef, objService, objTracer);
-            }
-
-            if (account != null)
-            {
-                accountNumber = account.GetAttributeValue<string>("accountnumber");
-                objTracer.Trace("accountNumber: " + accountNumber);
-            }
-
-            Entity product = null;
-
-            if (serviceRef != null)
-            {
-                product = GetServiceArea(serviceRef, objService, objTracer);
-            }
-
-            //int year = DateTime.Now.Year;
-            //if (serviceArea != null && serviceArea.GetAttributeValue<string>("cpdc_servicetype").ToLower().Equals("tax compliance"))
-            //{
-            //    year = year - 1;
-            //}
-
-            //string yearStr = year.ToString().Substring(2, 2);
-
-            string matterCode = product.GetAttributeValue<string>("cxp_mattercode");
-            objTracer.Trace("matterCode: " + matterCode);
-
-
-            string matterNumber = accountNumber + "-" + matterCode + "-" + matterYear;
-            objTracer.Trace("matterNumber: " + matterNumber);
-          
-            bool multipleServicesAllowed = product.GetAttributeValue<bool>("cxp_multipleservices");
-            objTracer.Trace("multipleServicesAllowed: " + multipleServicesAllowed);
-
-            while (MatterNumberExists(matterNumber, objService, objTracer))
-            {
-                objTracer.Trace("matterNumber exists already");
-                if (multipleServicesAllowed)
-                {
-                    int countOfServices = 0;
-                    countOfServices = RetrieveCountOfTheService(accountRef.Id, serviceRef.Id, matterYear, objService, objTracer);
-
-                    if (countOfServices < 5)
-                    {
-                        int matterCodeInt = 0;
-                        bool isNumeric = int.TryParse(matterCode, out matterCodeInt);
-                        if (isNumeric)
-                        {
-                            objTracer.Trace("isNumeric = true");
-                            matterCodeInt++;
-                            matterCode = matterCodeInt.ToString();
-                            objTracer.Trace("matterCode: " + matterCode);
-                            matterNumber = accountNumber + "-" + matterCode + "-" + matterYear;
-                            objTracer.Trace("matterNumber: " + matterNumber);
-                        }
-                        else
-                        {
-                            objTracer.Trace("isNumeric = false");
-                            string lastCharacter = matterCode.Substring(matterCode.Length - 1, 1);
-                            objTracer.Trace("lastCharacter: " + lastCharacter);
-                            int lastCharInt = 0;
-                            bool isLastNumeric = Int32.TryParse(lastCharacter, out lastCharInt);
-
-                            if (isLastNumeric)
-                            {
-                                objTracer.Trace("isLastNumeric = true");
-                                lastCharInt++;
-                            }
-                            else
-                            {
-                                objTracer.Trace("isLastNumeric = false");
-                                lastCharInt = 1;
-                            }
-
-
-                            matterCode = matterCode.Substring(0, matterCode.Length - 1) + lastCharInt.ToString();
-                            objTracer.Trace("matterCode: " + matterCode);
-                            matterNumber = accountNumber + "-" + matterCode + "-" + matterYear;
-                            objTracer.Trace("matterNumber: " + matterNumber);
-                        }
-                    }
-                    else
-                    {
-                        throw new Exception("More than 5 services are not allowed in the same year for an account with the same service requested.");
-                    }
-                }
-                else
-                {
-                    throw new Exception("Multiple services are not allowed in the same year for an account for the service requested ");
-                }
-
-            }
-
-            MatterNumber.Set(executionContext, matterNumber);
-
+            get { return tracer; }
+            set { tracer = value; }
         }
 
-        protected int RetrieveCountOfTheService(Guid accountId, Guid productId, string matterYear, IOrganizationService objService, ITracingService objTracer)
-        {
-            int count = 0;
-            QueryByAttribute query = new QueryByAttribute("cpdc_matter");
-            query.ColumnSet = new ColumnSet(new string[] { "cpdc_matternumber" });
-            query.AddAttributeValue("cpdc_clientid", accountId);
-            query.AddAttributeValue("cxp_product", productId);
-            query.AddAttributeValue("cxp_matteryeartext", matterYear);
-
-            EntityCollection results = objService.RetrieveMultiple(query);
-            if (results != null && results.Entities.Count > 0)
-            {
-                foreach (Entity matter in results.Entities)
-                {
-                    if (matter.Attributes.Contains("cpdc_matternumber") && matter.Attributes["cpdc_matternumber"] != null)
-                    {
-                        count++;
-                    }
-                }
-            }
-            return count;
-        }
-
-        protected bool MatterNumberExists(string matterNumber, IOrganizationService objService, ITracingService objTracer)
-        {
-            bool bMatterExists = false;
-
-            try
-            {
-                QueryByAttribute query = new QueryByAttribute("cpdc_matter");
-                query.ColumnSet = new ColumnSet(new string[] { "cpdc_matterid" });
-                query.AddAttributeValue("cpdc_matternumber", matterNumber);
-                query.AddAttributeValue("statecode", 0);
-
-                EntityCollection results = objService.RetrieveMultiple(query);
-                if (results != null && results.Entities.Count > 0)
-                {
-                    bMatterExists = true;
-                }
-            }
-            catch (Exception ex)
-            {
-                objTracer.Trace(ex.Message + "\n" + ex.StackTrace);
-                //throw ex;
-                throw new InvalidPluginExecutionException(ex.Message + "\n" + ex.StackTrace);
-            }
-
-            return bMatterExists;
-        }
-
-        protected Entity GetServiceArea(EntityReference serviceRef, IOrganizationService objService, ITracingService objTracer)
-        {
-            Entity product = null;
-
-            try
-            {
-                product = objService.Retrieve("product", serviceRef.Id, new ColumnSet(new string[] { "cxp_mattercode", "productid", "cxp_servicetype", "cxp_multipleservices" }));
-            }
-            catch (Exception ex)
-            {
-                objTracer.Trace(ex.Message + "\n" + ex.StackTrace);
-                //throw ex;
-                throw new InvalidPluginExecutionException(ex.Message + "\n" + ex.StackTrace);
-            }
-
-            return product;
-        }
-
-        protected Entity GetAccount(EntityReference accountRef, IOrganizationService objService, ITracingService objTracer)
+        public Entity GetAccount(Guid accountId)
         {
             Entity account = null;
 
             try
             {
-                account = objService.Retrieve("account", accountRef.Id, new ColumnSet(new string[] { "accountnumber", "accountid" }));
+                account = service.Retrieve("account", accountId, new ColumnSet(new string[] { "createdby" }));
+                tracer.Trace("GetAccount: account = " + account != null ? account.ToString() : "null.");
             }
-            catch (Exception ex)
+            catch(Exception ex)
             {
-                objTracer.Trace(ex.Message + "\n" + ex.StackTrace);
-                //throw ex;
-                throw new InvalidPluginExecutionException(ex.Message + "\n" + ex.StackTrace);
+                tracer.Trace(ex.Message + "\n" + ex.StackTrace);
+                throw ex;
             }
 
             return account;
         }
+
+        public Entity GetContact(Guid contactId)
+        {
+            Entity contact = null;
+
+            try
+            {
+                contact = service.Retrieve("contact", contactId, new ColumnSet(new string[] { "createdby" }));
+            }
+            catch (Exception ex)
+            {
+                tracer.Trace(ex.Message + "\n" + ex.StackTrace);
+                throw ex;
+            }
+
+            return contact;
+        }
+
+        public Entity GetUser(Guid userId)
+        {
+            Entity user = null;
+
+            try
+            {
+                user = service.Retrieve("systemuser", userId, new ColumnSet(new string[] { "businessunitid" }));
+            }
+            catch (Exception ex)
+            {
+                tracer.Trace(ex.Message + "\n" + ex.StackTrace);
+                throw ex;
+            }
+
+            return user;
+        }
+
+        public EntityReference GetBUOwnerRef(string buName)
+        {
+            EntityReference buOwnerRef = null;
+
+            try
+            {
+                string systemParameterName = buName + " User";
+                QueryByAttribute query = new QueryByAttribute("cxp_systemparameter");
+                query.AddAttributeValue("cxp_name", systemParameterName);
+                query.ColumnSet = new ColumnSet(new string[] { "cxp_value" });
+
+                EntityCollection results = service.RetrieveMultiple(query);
+
+                if (results != null)
+                {
+                    string buUserName = results.Entities[0].GetAttributeValue<string>("cxp_value");
+                    Entity buUser = GetUserByName(buUserName);
+                    if (buUser != null)
+                    {
+                        buOwnerRef = new EntityReference("systemuser", buUser.GetAttributeValue<Guid>("systemuserid"));
+                        buOwnerRef.Name = buUser.GetAttributeValue<string>("fullname");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                tracer.Trace(ex.Message + "\n" + ex.StackTrace);
+                throw ex;
+            }
+
+            return buOwnerRef;
+        }
+
+        public Entity GetUserByName(string name)
+        {
+            Entity user = null;
+
+            try
+            {
+                QueryByAttribute query = new QueryByAttribute("systemuser");
+                query.AddAttributeValue("fullname", name);
+                query.ColumnSet = new ColumnSet(new string[] { "systemuserid", "fullname" });
+
+                EntityCollection results = service.RetrieveMultiple(query);
+
+                if (results != null)
+                {
+                    user = results.Entities[0];
+                }
+            }
+            catch (Exception ex)
+            {
+                tracer.Trace(ex.Message + "\n" + ex.StackTrace);
+                throw ex;
+            }
+
+            return user;
+        }
+
+        public void AddUserToRecordAccessTeam(Guid userId, string recordType, Guid recordId)
+        {
+            try
+            {
+                AddUserToRecordTeamRequest request = new AddUserToRecordTeamRequest();
+                request.SystemUserId = userId;
+                request.Record = new EntityReference(recordType, recordId);
+                request.TeamTemplateId = GetAccessTeamTemplateIdByName(recordType);
+
+                service.Execute(request);
+            }
+            catch (Exception ex)
+            {
+                tracer.Trace(ex.Message + "\n" + ex.StackTrace);
+                throw ex;
+            }
+        }
+
+        public Guid GetAccessTeamTemplateIdByName(String recordType)
+        {
+            Guid templateId = Guid.Empty;
+            string accessTeamTemplateName = GetAccessTeamTemplateName(recordType);
+
+            if (accessTeamTemplateName != String.Empty)
+            {
+                try
+                {
+                    QueryExpression teamQuery = new QueryExpression
+                    {
+                        EntityName = "teamtemplate",
+                        ColumnSet = new ColumnSet("teamtemplateid"),
+                        Criteria =
+                        {
+                            Conditions =
+			                {   
+				                new ConditionExpression("teamtemplatename", ConditionOperator.Equal, accessTeamTemplateName)
+			                }
+                        }
+                    };
+
+                    var results = service.RetrieveMultiple(teamQuery).Entities;
+
+                    if (results.Count != 1)
+                        throw new Exception("Can't retrieve Team Access Template for " + recordType);
+                    else
+                    {
+                        templateId = results[0].Id;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    tracer.Trace(ex.Message + "\n" + ex.StackTrace);
+                    throw ex;
+                }
+            }
+            
+            return templateId;
+        }
+
+        public string GetAccessTeamTemplateName(string recordType)
+        {
+            string teamName = String.Empty;
+            string systemParameterName = String.Empty;
+
+            if (recordType.ToLower().Equals("account"))
+            {
+                systemParameterName = "Account Access Team Template";
+            }
+            else if (recordType.ToLower().Equals("contact"))
+            {
+                systemParameterName = "Contact Access Team Template";
+            }
+
+            if (systemParameterName != String.Empty)
+            {
+                try
+                {
+                    QueryByAttribute query = new QueryByAttribute("cxp_systemparameter");
+                    query.AddAttributeValue("cxp_name", systemParameterName);
+                    query.ColumnSet = new ColumnSet(new string[] { "cxp_value" });
+
+                    EntityCollection results = service.RetrieveMultiple(query);
+
+                    if (results != null)
+                    {
+                        teamName = results.Entities[0].GetAttributeValue<string>("cxp_value");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    tracer.Trace(ex.Message + "\n" + ex.StackTrace);
+                    throw ex;
+                }
+            }
+            
+            return teamName;
+        }
+
+        public void CreateFollowOfRecordForCreatedByUser(Guid userId, string recordType, Guid recordId)
+        {
+            try
+            {
+                Entity postFollow = new Entity("postfollow");
+                postFollow.Attributes["regardingobjectid"] = new EntityReference(recordType, recordId);
+                postFollow.Attributes["ownerid"] = new EntityReference("systemuser", userId);
+                service.Create(postFollow);
+            }
+            catch (Exception ex)
+            {
+                tracer.Trace(ex.Message + "\n" + ex.StackTrace);
+                throw ex;
+            }
+        }
+
+        public Entity GetAccountCommunicationOptions(Guid accountId)
+        {
+            Entity account = null;
+
+            try
+            {
+                account = service.Retrieve("account", accountId, new ColumnSet(new string[] { "donotbulkemail","donotbulkpostalmail","donotemail","donotphone","donotfax","donotpostalmail","donotsendmm"}));
+                tracer.Trace("GetAccount: account = " + account != null ? account.ToString() : "null.");
+            }
+            catch (Exception ex)
+            {
+                tracer.Trace(ex.Message + "\n" + ex.StackTrace);
+                throw ex;
+            }
+
+            return account;
+        }
+
+        public List<Entity> GetContactsForAccount(Guid accountId)
+        {
+            List<Entity> contacts = new List<Entity>();
+
+            try
+            {
+                QueryByAttribute query = new QueryByAttribute("contact");
+                query.AddAttributeValue("parentcustomerid", accountId);
+                query.ColumnSet = new ColumnSet(new string[] { "contactid" });
+
+                EntityCollection results = service.RetrieveMultiple(query);
+
+                if (results != null)
+                {
+                    contacts = results.Entities.ToList();
+                }
+            }
+            catch (Exception ex)
+            {
+                tracer.Trace(ex.Message + "\n" + ex.StackTrace);
+                throw ex;
+            }
+
+            return contacts;
+        }
+
+        public bool boolCheckIfUserIsAlreadyOnAccessTeam(Guid userId, string recordType, Guid recordId)
+        {
+            bool returnValue = false;
+
+            return returnValue;
+        }
     }
 }
-
