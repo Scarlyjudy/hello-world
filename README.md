@@ -1,97 +1,252 @@
 using System;
+using System.Activities;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
-using System.ServiceModel;
 using System.Text;
 using System.Threading.Tasks;
 using Microsoft.Xrm.Sdk;
-using Microsoft.Xrm.Sdk.Query;
-using System.Net;
-using System.Net.Http;
-using System.Activities;
 using Microsoft.Xrm.Sdk.Workflow;
+using Microsoft.Xrm.Sdk.Query;
 
 namespace CXPWorkflows
 {
-    public class PushAccountToIntegrationWorkflow : CodeActivity
+    public class GenerateNewMatterNumber : CodeActivity
     {
-		[RequiredArgument]
-		[Input("account")]
-		[ReferenceTarget("account")]
-		public InArgument<EntityReference> account { get; set; }	
+        //private IOrganizationService service;
+        //private ITracingService tracer;
+
+        [RequiredArgument]
+        [Input("Client")]
+        [ReferenceTarget("account")]
+        public InArgument<EntityReference> Client { get; set; }
         
+
+                                   [RequiredArgument]
+                                    [Input("OpportunityProduct")]
+                                    [ReferenceTarget("product")]
+                                    public InArgument<EntityReference> OpportunityProduct { get; set; }
+
+        [RequiredArgument]
+        [Input("MatterYear")]
+        public InArgument<string> MatterYear { get; set; }
+
+        [Output("MatterNumber")]
+        public OutArgument<string> MatterNumber { get; set; }
+
         protected override void Execute(CodeActivityContext executionContext)
         {
-				
-		   // Get the context service.
+            // Get the context service.
             IWorkflowContext context = executionContext.GetExtension<IWorkflowContext>();
             IOrganizationServiceFactory serviceFactory = executionContext.GetExtension<IOrganizationServiceFactory>();
 
             // Use the context service to create an instance of IOrganizationService.
             IOrganizationService objService = serviceFactory.CreateOrganizationService(context.InitiatingUserId);
-            
+            //service = serviceFactory.CreateOrganizationService(context.InitiatingUserId);
+
             ITracingService objTracer = executionContext.GetExtension<ITracingService>();
-            
-            WorkflowUtilities wfUtilities = new WorkflowUtilities();
-			
-			Guid accId = account.Get(executionContext).Id;
-           
-            if (accId != null)
-            {           
-                //HttpWebResponse response = null;
-                try
+            //tracer = executionContext.GetExtension<ITracingService>();
+
+            EntityReference accountRef = this.Client.Get(executionContext);
+            EntityReference serviceRef = this.OpportunityProduct.Get(executionContext);
+            string matterYear = this.MatterYear.Get(executionContext);
+         
+            if (serviceRef == null)
+            {
+                throw new Exception("Opportunity Product needs to be updated before generating the Matter number.");
+            }
+            if (matterYear == null)
+            {
+                throw new Exception("Matter Year needs to be updated before generating the Matter number.");
+            }
+
+                // get service area reference, appropriate year and client number
+                Entity account = null;
+            string accountNumber = String.Empty;
+
+            if (accountRef != null)
+            {
+                account = GetAccount(accountRef, objService, objTracer);
+            }
+
+            if (account != null)
+            {
+                accountNumber = account.GetAttributeValue<string>("accountnumber");
+                objTracer.Trace("accountNumber: " + accountNumber);
+            }
+
+            Entity product = null;
+
+            if (serviceRef != null)
+            {
+                product = GetServiceArea(serviceRef, objService, objTracer);
+            }
+
+            //int year = DateTime.Now.Year;
+            //if (serviceArea != null && serviceArea.GetAttributeValue<string>("cpdc_servicetype").ToLower().Equals("tax compliance"))
+            //{
+            //    year = year - 1;
+            //}
+
+            //string yearStr = year.ToString().Substring(2, 2);
+
+            string matterCode = product.GetAttributeValue<string>("cxp_mattercode");
+            objTracer.Trace("matterCode: " + matterCode);
+
+
+            string matterNumber = accountNumber + "-" + matterCode + "-" + matterYear;
+            objTracer.Trace("matterNumber: " + matterNumber);
+          
+            bool multipleServicesAllowed = product.GetAttributeValue<bool>("cxp_multipleservices");
+            objTracer.Trace("multipleServicesAllowed: " + multipleServicesAllowed);
+
+            while (MatterNumberExists(matterNumber, objService, objTracer))
+            {
+                objTracer.Trace("matterNumber exists already");
+                if (multipleServicesAllowed)
                 {
-                     Entity account = objService.Retrieve("account", accId, new ColumnSet(new string[] { "accountnumber", "cpdc_companyrelationship" }));
-                    //Entity account = postAccount;//Added by me MSFT, Instead of using Service.retrieve we are using Post image to get the values.
-                    if (account != null && account.GetAttributeValue<OptionSetValue>("cpdc_companyrelationship") != null &&
-                        (account.GetAttributeValue<OptionSetValue>("cpdc_companyrelationship").Value == 100000000 ||
-                        account.GetAttributeValue<OptionSetValue>("cpdc_companyrelationship").Value == 100000001) &&
-                        account.GetAttributeValue<string>("accountnumber") != null &&
-                        account.GetAttributeValue<string>("accountnumber") != string.Empty)
-                    {           
-                        string clientNumber = account.GetAttributeValue<string>("accountnumber");
-                        if (clientNumber == null || clientNumber == string.Empty)
-                        {
-                            throw new Exception("This account does not contain a client number.  Accounts without a client number cannot be integrated with Elite.");
-                        }
+                    int countOfServices = 0;
+                    countOfServices = RetrieveCountOfTheService(accountRef.Id, serviceRef.Id, matterYear, objService, objTracer);
 
-                        String integration_url = wfUtilities.GetSystemParameter("Account Integration URL", objService, objTracer);
-                     
-                        integration_url = integration_url + account.GetAttributeValue<string>("accountnumber");
-                       
-                        WebRequest request = WebRequest.Create(integration_url);
-                    
-                        request.Timeout = 300000;
-                     
-                        HttpWebResponse response = (HttpWebResponse)request.GetResponse();
-                        StreamReader responseReader = new StreamReader(response.GetResponseStream()); // we read response
-                      
-                        if (responseReader.ReadToEnd().Contains("Success")) //success
+                    if (countOfServices < 5)
+                    {
+                        int matterCodeInt = 0;
+                        bool isNumeric = int.TryParse(matterCode, out matterCodeInt);
+                        if (isNumeric)
                         {
-                            objTracer.Trace("Response from Elite Integration Endpoint (Client): " + "SUCCESS");
+                            objTracer.Trace("isNumeric = true");
+                            matterCodeInt++;
+                            matterCode = matterCodeInt.ToString();
+                            objTracer.Trace("matterCode: " + matterCode);
+                            matterNumber = accountNumber + "-" + matterCode + "-" + matterYear;
+                            objTracer.Trace("matterNumber: " + matterNumber);
                         }
-                        else //fail, length is 6
+                        else
                         {
-                            objTracer.Trace("Response from Elite Integration Endpoint (Client): " + "FAIL");
-                        }
+                            objTracer.Trace("isNumeric = false");
+                            string lastCharacter = matterCode.Substring(matterCode.Length - 1, 1);
+                            objTracer.Trace("lastCharacter: " + lastCharacter);
+                            int lastCharInt = 0;
+                            bool isLastNumeric = Int32.TryParse(lastCharacter, out lastCharInt);
 
+                            if (isLastNumeric)
+                            {
+                                objTracer.Trace("isLastNumeric = true");
+                                lastCharInt++;
+                            }
+                            else
+                            {
+                                objTracer.Trace("isLastNumeric = false");
+                                lastCharInt = 1;
+                            }
+
+
+                            matterCode = matterCode.Substring(0, matterCode.Length - 1) + lastCharInt.ToString();
+                            objTracer.Trace("matterCode: " + matterCode);
+                            matterNumber = accountNumber + "-" + matterCode + "-" + matterYear;
+                            objTracer.Trace("matterNumber: " + matterNumber);
+                        }
                     }
-                } //end of try
-
-                catch (FaultException<OrganizationServiceFault> ex)
-                {
-                    throw new InvalidPluginExecutionException("An error occurred in MyPlug-in.", ex);
+                    else
+                    {
+                        throw new Exception("More than 5 services are not allowed in the same year for an account with the same service requested.");
+                    }
                 }
-
-                catch (Exception ex)
+                else
                 {
-                    objTracer.Trace("MyPlugin: {0}", ex.ToString());
-                    //throw;
-                    throw new InvalidPluginExecutionException("MyPlugin: {0}" + ex.ToString());
+                    throw new Exception("Multiple services are not allowed in the same year for an account for the service requested ");
                 }
 
             }
+
+            MatterNumber.Set(executionContext, matterNumber);
+
+        }
+
+        protected int RetrieveCountOfTheService(Guid accountId, Guid productId, string matterYear, IOrganizationService objService, ITracingService objTracer)
+        {
+            int count = 0;
+            QueryByAttribute query = new QueryByAttribute("cpdc_matter");
+            query.ColumnSet = new ColumnSet(new string[] { "cpdc_matternumber" });
+            query.AddAttributeValue("cpdc_clientid", accountId);
+            query.AddAttributeValue("cxp_product", productId);
+            query.AddAttributeValue("cxp_matteryeartext", matterYear);
+
+            EntityCollection results = objService.RetrieveMultiple(query);
+            if (results != null && results.Entities.Count > 0)
+            {
+                foreach (Entity matter in results.Entities)
+                {
+                    if (matter.Attributes.Contains("cpdc_matternumber") && matter.Attributes["cpdc_matternumber"] != null)
+                    {
+                        count++;
+                    }
+                }
+            }
+            return count;
+        }
+
+        protected bool MatterNumberExists(string matterNumber, IOrganizationService objService, ITracingService objTracer)
+        {
+            bool bMatterExists = false;
+
+            try
+            {
+                QueryByAttribute query = new QueryByAttribute("cpdc_matter");
+                query.ColumnSet = new ColumnSet(new string[] { "cpdc_matterid" });
+                query.AddAttributeValue("cpdc_matternumber", matterNumber);
+                query.AddAttributeValue("statecode", 0);
+
+                EntityCollection results = objService.RetrieveMultiple(query);
+                if (results != null && results.Entities.Count > 0)
+                {
+                    bMatterExists = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                objTracer.Trace(ex.Message + "\n" + ex.StackTrace);
+                //throw ex;
+                throw new InvalidPluginExecutionException(ex.Message + "\n" + ex.StackTrace);
+            }
+
+            return bMatterExists;
+        }
+
+        protected Entity GetServiceArea(EntityReference serviceRef, IOrganizationService objService, ITracingService objTracer)
+        {
+            Entity product = null;
+
+            try
+            {
+                product = objService.Retrieve("product", serviceRef.Id, new ColumnSet(new string[] { "cxp_mattercode", "productid", "cxp_servicetype", "cxp_multipleservices" }));
+            }
+            catch (Exception ex)
+            {
+                objTracer.Trace(ex.Message + "\n" + ex.StackTrace);
+                //throw ex;
+                throw new InvalidPluginExecutionException(ex.Message + "\n" + ex.StackTrace);
+            }
+
+            return product;
+        }
+
+        protected Entity GetAccount(EntityReference accountRef, IOrganizationService objService, ITracingService objTracer)
+        {
+            Entity account = null;
+
+            try
+            {
+                account = objService.Retrieve("account", accountRef.Id, new ColumnSet(new string[] { "accountnumber", "accountid" }));
+            }
+            catch (Exception ex)
+            {
+                objTracer.Trace(ex.Message + "\n" + ex.StackTrace);
+                //throw ex;
+                throw new InvalidPluginExecutionException(ex.Message + "\n" + ex.StackTrace);
+            }
+
+            return account;
         }
     }
 }
+
